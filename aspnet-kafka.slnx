@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="AppHost/AppHost.csproj" />
+  <Project Path="ServiceDefaults/ServiceDefaults.csproj" />
+  <Project Path="Web/Web.csproj" Id="0c3b32e1-d60d-41c5-9f4f-683cc727fb64" />
+</Solution>

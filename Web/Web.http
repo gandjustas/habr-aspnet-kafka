@@ -1,0 +1,21 @@
+@Web_HostAddress = http://localhost:5280
+
+POST {{Web_HostAddress}}/direct/
+Content-Type: application/json
+
+{
+  "content": "Hello, world!"
+}
+
+###
+
+
+
+POST {{Web_HostAddress}}/naive/
+Content-Type: application/json
+
+{
+  "content": "Hello, world!"
+}
+
+###

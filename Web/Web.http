@@ -19,3 +19,13 @@ Content-Type: application/json
 }
 
 ###
+
+
+POST {{Web_HostAddress}}/outbox/
+Content-Type: application/json
+
+{
+  "content": "Hello, world!"
+}
+
+###

@@ -29,3 +29,23 @@ Content-Type: application/json
 }
 
 ###
+
+
+POST {{Web_HostAddress}}/replication/
+Content-Type: application/json
+
+{
+  "content": "Hello, world!"
+}
+
+###
+
+
+POST {{Web_HostAddress}}/debezium/
+Content-Type: application/json
+
+{
+  "content": "Hello, world!"
+}
+
+###

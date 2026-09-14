@@ -18,16 +18,8 @@ public class KafkaConsumer(
                 while (!stoppingToken.IsCancellationRequested)
                 {
                         var consumed = consumer.Consume(stoppingToken);
-                        try
-                        {
-                            var completion = completions.GetOrAdd(consumed.Message.Key, _ => new());
-                            completion.TrySetResult(consumed.Message.Value);
-                        }
-                        finally
-                        {
-                            completions.TryRemove(consumed.Message.Key, out _);
-                            consumer.Commit(consumed);
-                        }
+                        completions.Complete(consumed.Message.Key, consumed.Message.Value);
+                        consumer.Commit(consumed);
                 }
                 consumer.Close();
             }

@@ -9,7 +9,10 @@ var postgresPassword = builder.AddParameter("postgres-password", "postgres_demo_
 
 IResourceBuilder<PostgresServerResource> postgres = builder.AddPostgres("postgres", password: postgresPassword)
     .WithArgs("-c", "wal_level=logical")
-    .WithArgs("-c", "max_connections=110")
+    .WithArgs("-c", "max_connections=300")
+    .WithArgs("-c", "max_replication_slots=50")
+    .WithArgs("-c", "idle_replication_slot_timeout=3600") // 1 час
+    .WithArgs("-c", "max_slot_wal_keep_size=2048") // 2 GB
     .WithDataVolume();
 
 var database = postgres.AddDatabase("database");
@@ -28,14 +31,25 @@ var debeziumConnect = builder.AddContainer("debezium-connect", "debezium/connect
     .WaitFor(kafka)
     .WaitFor(database);
 
+var rmq = builder.AddRabbitMQ("rmq");
 
 var web = builder.AddProject<Projects.Web>("web")
     .WithReference(database)
     .WithReference(kafka)
     .WithHttpEndpoint(port: 5280, name: "http")
     .WaitFor(database)
-    .WaitFor(kafka);
-    ;
+    .WaitFor(kafka)
+    .WithExplicitStart();
+
+
+var inboxLoadTest = builder.AddProject<Projects.Inbox_LoadTest>("inbox-load")
+    .WithReference(database)
+    .WithReference(kafka)
+    .WithReference(rmq)
+    .WaitFor(database)
+    .WaitFor(rmq)
+    .WaitFor(kafka)
+    .WithExplicitStart();
 
 var migrations = web.AddEFMigrations("migrations")
     .WaitFor(database)

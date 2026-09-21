@@ -1,7 +1,7 @@
 <Solution>
   <Project Path="AppHost/AppHost.csproj" />
   <Project Path="Data/Data.csproj" Id="f2441d6a-730b-4bcb-afaa-16e8005d7ddd" />
-  <Project Path="Inbox.LoadTest/Inbox.LoadTest.csproj" Id="c8c5cbc4-218e-4c8b-a27b-ea4d904fe530" />
+  <Project Path="LoadTest/LoadTest.csproj" Id="c8c5cbc4-218e-4c8b-a27b-ea4d904fe530" />
   <Project Path="ServiceDefaults/ServiceDefaults.csproj" />
   <Project Path="Web/Web.csproj" Id="0c3b32e1-d60d-41c5-9f4f-683cc727fb64" />
 </Solution>

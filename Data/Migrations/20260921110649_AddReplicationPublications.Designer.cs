@@ -2,18 +2,20 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
-using NpgsqlTypes;
 
 #nullable disable
 
 namespace Web.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260921110649_AddReplicationPublications")]
+    partial class AddReplicationPublications
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,46 +23,6 @@ namespace Web.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Inbox", b =>
-                {
-                    b.Property<int>("Id")
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Consumer")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("consumer");
-
-                    b.HasKey("Id")
-                        .HasName("pk_inbox");
-
-                    b.ToTable("inbox", (string)null);
-
-                    b.HasAnnotation("Npgsql:StorageParameter:autovacuum_enabled", false);
-                });
-
-            modelBuilder.Entity("InboxWal", b =>
-                {
-                    b.Property<NpgsqlLogSequenceNumber>("Wal")
-                        .HasColumnType("pg_lsn")
-                        .HasColumnName("wal");
-
-                    b.Property<string>("Slot")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("slot");
-
-                    b.HasKey("Wal")
-                        .HasName("pk_inbox_wal");
-
-                    b.ToTable("inbox_wal", (string)null);
-
-                    b.HasAnnotation("Npgsql:StorageParameter:autovacuum_enabled", false);
-                });
 
             modelBuilder.Entity("Message", b =>
                 {

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Confluent.Kafka;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -24,7 +24,7 @@ builder.AddKafkaConsumer<int, Message>("kafka",
     configureBuilder: builder => {
         builder.SetValueDeserializer(kafkaSerializer);    
     });
-builder.Services.AddHostedService<KafkaConsumer>();
+//builder.Services.AddHostedService<KafkaConsumer>();
 
 builder.Services.AddOutbox(options =>
 {
@@ -40,18 +40,25 @@ builder.Services.AddTransient<IOutboxDispatcher<Message>, OutboxDispatcher>();
 builder.Services.AddKeyedSingleton("completions" ,(_,_) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
 
 builder.Services.AddKeyedSingleton("completions-replication", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
-builder.Services.AddHostedService<PgOutputConsumerService>();
+//builder.Services.AddHostedService<PgOutputConsumerService>();
 
 builder.AddKafkaConsumer<Ignore, string>("kafka",
     configureSettings: settings => settings.Config.GroupId = "debezium-consumer");
 builder.Services.AddKeyedSingleton("completions-debezium", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
-builder.Services.AddHostedService<DebeziumConsumer>();
+//builder.Services.AddHostedService<DebeziumConsumer>();
 
 var app = builder.Build();
 
 await EnsureReplicationSetupAsync(app.Configuration);
 
 // Configure the HTTP request pipeline.
+
+// Имитация полезной работы консьюмера: «отправка письма» ценой в переключение контекста
+app.MapPost("/send-email", async (Message message) =>
+{
+    await Task.Yield();
+    return Results.Accepted();
+});
 
 app.MapPost("/direct", async (Message dto,
                                AppDbContext db,
@@ -154,25 +161,13 @@ app.MapPost("/debezium", async (Message dto,
 
 app.Run();
 
+// Публикация rep_pub создаётся миграцией AddReplicationPublications, здесь остаётся только слот
 static async Task EnsureReplicationSetupAsync(IConfiguration configuration)
 {
     var connectionString = configuration.GetConnectionString("database");
 
     await using var conn = new NpgsqlConnection(connectionString);
     await conn.OpenAsync();
-
-    await using (var cmd = new NpgsqlCommand(
-        $"""
-         DO $$
-         BEGIN
-             IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = '{PgOutputConsumerService.PublicationName}') THEN
-                 CREATE PUBLICATION {PgOutputConsumerService.PublicationName} FOR TABLE messages;
-             END IF;
-         END $$;
-         """, conn))
-    {
-        await cmd.ExecuteNonQueryAsync();
-    }
 
     await using (var cmd = new NpgsqlCommand(
         $"""

@@ -1,0 +1,99 @@
+[
+  {
+    "Transport": "dbz-quorum",
+    "Consumers": 1,
+    "Producers": 20,
+    "Messages": 2000,
+    "ProduceSeconds": 1.84,
+    "SendPerSecond": 1084,
+    "DrainSeconds": 2.46,
+    "DrainPerSecond": 813,
+    "DrainOnlySeconds": 0.61,
+    "DrainOnlyPerSecond": 3253,
+    "ProducerP95Ms": 24.13,
+    "AgeP50Ms": 0,
+    "AgeP95Ms": 0,
+    "AgeMaxMs": 0,
+    "DbOpsPerMessage": 0.01,
+    "Sent": 2000,
+    "SendFailed": 0,
+    "Processed": 2000,
+    "Skipped": 0,
+    "Failures": 0,
+    "InboxRows": 2000,
+    "DistinctIds": 2000,
+    "WorkCalls": 2000,
+    "WorkDistinct": 2000,
+    "WorkerClaimsMin": 2000,
+    "WorkerClaimsMax": 2000,
+    "Load": {
+      "Services": [
+        {
+          "Service": "postgres",
+          "CpuPercentAvg": 75.4,
+          "CpuPercentMax": 75.4,
+          "CpuSeconds": 1.9,
+          "MemoryMbAvg": 98,
+          "MemoryMbMax": 98,
+          "DiskReadMb": null,
+          "DiskWriteMb": null
+        },
+        {
+          "Service": "kafka",
+          "CpuPercentAvg": 2.2,
+          "CpuPercentMax": 2.2,
+          "CpuSeconds": 0.1,
+          "MemoryMbAvg": 677,
+          "MemoryMbMax": 677,
+          "DiskReadMb": null,
+          "DiskWriteMb": null
+        },
+        {
+          "Service": "rmq",
+          "CpuPercentAvg": 45.3,
+          "CpuPercentMax": 45.3,
+          "CpuSeconds": 1.1,
+          "MemoryMbAvg": 142,
+          "MemoryMbMax": 142,
+          "DiskReadMb": null,
+          "DiskWriteMb": null
+        },
+        {
+          "Service": "dbz-quorum",
+          "CpuPercentAvg": 405.2,
+          "CpuPercentMax": 405.2,
+          "CpuSeconds": 10,
+          "MemoryMbAvg": 636,
+          "MemoryMbMax": 636,
+          "DiskReadMb": null,
+          "DiskWriteMb": null
+        },
+        {
+          "Service": "web",
+          "CpuPercentAvg": 9.2,
+          "CpuPercentMax": 51.9,
+          "CpuSeconds": 0.2,
+          "MemoryMbAvg": 151,
+          "MemoryMbMax": 153,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        },
+        {
+          "Service": "loadtest",
+          "CpuPercentAvg": 18.9,
+          "CpuPercentMax": 70.1,
+          "CpuSeconds": 0.5,
+          "MemoryMbAvg": 82,
+          "MemoryMbMax": 104,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        }
+      ],
+      "WindowSeconds": 2.5
+    },
+    "Warmup": false,
+    "Error": null,
+    "Success": true,
+    "CpuMsPerMessage": 6.9
+  }
+]

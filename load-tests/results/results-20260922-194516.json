@@ -1,0 +1,89 @@
+[
+  {
+    "Transport": "wal",
+    "Consumers": 1,
+    "Producers": 20,
+    "Messages": 1000,
+    "ProduceSeconds": 0.85,
+    "SendPerSecond": 1178,
+    "DrainSeconds": 1.02,
+    "DrainPerSecond": 984,
+    "DrainOnlySeconds": 0.17,
+    "DrainOnlyPerSecond": 5974,
+    "ProducerP95Ms": 15.65,
+    "AgeP50Ms": 988,
+    "AgeP95Ms": 1177,
+    "AgeMaxMs": 1346,
+    "DbOpsPerMessage": 0.01,
+    "Sent": 1000,
+    "SendFailed": 0,
+    "Processed": 1000,
+    "Skipped": 0,
+    "Failures": 0,
+    "InboxRows": 1000,
+    "DistinctIds": 1000,
+    "WorkCalls": 1000,
+    "WorkDistinct": 1000,
+    "WorkerClaimsMin": 1000,
+    "WorkerClaimsMax": 1000,
+    "Load": {
+      "Services": [
+        {
+          "Service": "postgres",
+          "CpuPercentAvg": 12.1,
+          "CpuPercentMax": 59.6,
+          "CpuSeconds": 0.1,
+          "MemoryMbAvg": 77,
+          "MemoryMbMax": 92,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        },
+        {
+          "Service": "kafka",
+          "CpuPercentAvg": 1.5,
+          "CpuPercentMax": 2.2,
+          "CpuSeconds": 0,
+          "MemoryMbAvg": 675,
+          "MemoryMbMax": 675,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0.1
+        },
+        {
+          "Service": "rmq",
+          "CpuPercentAvg": 0.3,
+          "CpuPercentMax": 0.9,
+          "CpuSeconds": 0,
+          "MemoryMbAvg": 136,
+          "MemoryMbMax": 137,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        },
+        {
+          "Service": "web",
+          "CpuPercentAvg": 15.7,
+          "CpuPercentMax": 77,
+          "CpuSeconds": 0.2,
+          "MemoryMbAvg": 144,
+          "MemoryMbMax": 149,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        },
+        {
+          "Service": "loadtest",
+          "CpuPercentAvg": 15.5,
+          "CpuPercentMax": 55.3,
+          "CpuSeconds": 0.2,
+          "MemoryMbAvg": 83,
+          "MemoryMbMax": 97,
+          "DiskReadMb": 0,
+          "DiskWriteMb": 0
+        }
+      ],
+      "WindowSeconds": 1
+    },
+    "Warmup": false,
+    "Error": null,
+    "Success": true,
+    "CpuMsPerMessage": 0.5
+  }
+]

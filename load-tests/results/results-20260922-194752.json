@@ -1,0 +1,49 @@
+[
+  {
+    "Transport": "dbz-kafka",
+    "Consumers": 2,
+    "Producers": 20,
+    "Messages": 2000,
+    "ProduceSeconds": 0,
+    "SendPerSecond": 0,
+    "DrainSeconds": 0,
+    "DrainPerSecond": 0,
+    "DrainOnlySeconds": 0,
+    "DrainOnlyPerSecond": 0,
+    "ProducerP95Ms": 0,
+    "AgeP50Ms": 0,
+    "AgeP95Ms": 0,
+    "AgeMaxMs": 0,
+    "DbOpsPerMessage": 0,
+    "Sent": 0,
+    "SendFailed": 0,
+    "Processed": 0,
+    "Skipped": 0,
+    "Failures": 0,
+    "InboxRows": 0,
+    "DistinctIds": 0,
+    "WorkCalls": 0,
+    "WorkDistinct": 0,
+    "WorkerClaimsMin": 0,
+    "WorkerClaimsMax": 0,
+    "Load": {
+      "Services": [
+        {
+          "Service": "loadtest",
+          "CpuPercentAvg": 0,
+          "CpuPercentMax": 0,
+          "CpuSeconds": 0,
+          "MemoryMbAvg": 57,
+          "MemoryMbMax": 57,
+          "DiskReadMb": null,
+          "DiskWriteMb": null
+        }
+      ],
+      "WindowSeconds": 0
+    },
+    "Warmup": false,
+    "Error": "Init scenario error: \u0027Confluent.Kafka.Admin.CreateTopicsException: An error occurred creating topics: [dbzk.public.messages]: [Topic \u0027dbzk.public.messages\u0027 already exists.].\r\n   at DbzKafkaScenarios.RecreateTopicAsync(IAdminClient admin) in D:\\Projects\\aspnet-kafka\\LoadTest\\Scenarios\\DbzKafkaScenarios.cs:line 193\r\n   at DbzKafkaScenarios.PrepareAsync(Int32 consumers, Queue\u00601[] ready, Queue\u00601[] pending, RunState state) in D:\\Projects\\aspnet-kafka\\LoadTest\\Scenarios\\DbzKafkaScenarios.cs:line 141\r\n   at NBomber.DomainServices.TestHost.TestHostScenario.initEnabledScenarios@20.MoveNext()\u0027",
+    "Success": false,
+    "CpuMsPerMessage": 0
+  }
+]

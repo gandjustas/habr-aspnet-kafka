@@ -8,7 +8,9 @@ public class Message
 {
     public int Id { get; set; }
     public string Content { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    // Инициализатора нет намеренно: время вставки ставит сама база (default now()), поэтому у всех
+    // плеч замера одни часы, и это же значение едет в WAL и в конверт Debezium
+    public DateTime CreatedAt { get; set; }
 }
 
 
@@ -38,6 +40,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> opts)
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.AddOutboxMessages();
+
+        modelBuilder.Entity<Message>(entity =>
+        {
+            // Время вставки ставит база: одни часы на все плечи замера
+            entity.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+        });
 
         modelBuilder.Entity<InboxWal>(entity =>
         {

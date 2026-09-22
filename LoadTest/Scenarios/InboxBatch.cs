@@ -4,12 +4,6 @@ using Npgsql;
 // обработки тут нет — брокер сам отдаёт сообщение одному потребителю
 internal static class InboxBatch
 {
-    public static async Task ClearAsync(NpgsqlDataSource dataSource, CancellationToken ct)
-    {
-        await using var command = dataSource.CreateCommand("truncate table inbox");
-        await command.ExecuteNonQueryAsync(ct);
-    }
-
     // Пачка — один запрос: отмечаем все id сразу и забираем те, что достались нам.
     // Вторая ветка — на случай, если отметка уже наша: переотправленное сообщение надо обработать
     public static async Task<HashSet<int>> ClaimAsync(

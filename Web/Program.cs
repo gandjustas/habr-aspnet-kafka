@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Confluent.Kafka;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -10,54 +10,91 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 builder.AddNpgsqlDbContext<AppDbContext>("database",
-    configureDbContextOptions: options => { 
+    configureSettings: settings =>
+    {
+        // Все вставки нагрузочного теста идут через этот пул, а отправителей 200
+        settings.ConnectionString = new NpgsqlConnectionStringBuilder(settings.ConnectionString) { MaxPoolSize = 220 }.ConnectionString;
+        settings.DisableTracing = true;
+    },
+    configureDbContextOptions: options => {
         options.UseSnakeCaseNamingConvention();
     });
 
+builder.Services.AddSingleton<LoadStats>();
 
-var kafkaSerializer = new KafkaJsonSerializer<Message>();
-builder.AddKafkaProducer<int, Message>("kafka",
-    configureBuilder: builder => {
-        builder.SetValueSerializer(kafkaSerializer);
-    });
-builder.AddKafkaConsumer<int, Message>("kafka",
-    configureBuilder: builder => {
-        builder.SetValueDeserializer(kafkaSerializer);    
-    });
-//builder.Services.AddHostedService<KafkaConsumer>();
+// Старый бенчмарк из статьи: свои фоновые консьюмеры, outbox и продюсер в Kafka. В сквозном замере они
+// только мешают: слот rep_slot декодирует КАЖДУЮ транзакцию сервера, включая все вставки прогона,
+// диспетчер outbox опрашивает базу каждые 100 мс, а продюсер держит соединение с брокером, который
+// сейчас под замером. Поэтому по умолчанию всё это выключено.
+var legacyConsumers = builder.Configuration.GetValue("Bench:LegacyConsumers", false);
 
-builder.Services.AddOutbox(options =>
+if (legacyConsumers)
 {
-    options.PollingInterval = TimeSpan.FromMilliseconds(100);
-    options.BatchSize = 50;
-    options.MaxAttempts = 3;
-})
-.WithEfCore<AppDbContext>()
-.AddMessageOutbox();
+    var kafkaSerializer = new KafkaJsonSerializer<Message>();
+    builder.AddKafkaProducer<int, Message>("kafka",
+        configureBuilder: builder => {
+            builder.SetValueSerializer(kafkaSerializer);
+        });
+    builder.AddKafkaConsumer<int, Message>("kafka",
+        configureBuilder: builder => {
+            builder.SetValueDeserializer(kafkaSerializer);
+        });
+    builder.Services.AddHostedService<KafkaConsumer>();
 
-builder.Services.AddTransient<IOutboxDispatcher<Message>, OutboxDispatcher>();
+    builder.Services.AddOutbox(options =>
+    {
+        options.PollingInterval = TimeSpan.FromMilliseconds(100);
+        options.BatchSize = 50;
+        options.MaxAttempts = 3;
+    })
+    .WithEfCore<AppDbContext>()
+    .AddMessageOutbox();
 
-builder.Services.AddKeyedSingleton("completions" ,(_,_) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
+    builder.Services.AddTransient<IOutboxDispatcher<Message>, OutboxDispatcher>();
 
-builder.Services.AddKeyedSingleton("completions-replication", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
-//builder.Services.AddHostedService<PgOutputConsumerService>();
+    builder.Services.AddKeyedSingleton("completions" ,(_,_) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
 
-builder.AddKafkaConsumer<Ignore, string>("kafka",
-    configureSettings: settings => settings.Config.GroupId = "debezium-consumer");
-builder.Services.AddKeyedSingleton("completions-debezium", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
-//builder.Services.AddHostedService<DebeziumConsumer>();
+    builder.Services.AddKeyedSingleton("completions-replication", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
+    builder.Services.AddHostedService<PgOutputConsumerService>();
+
+    builder.AddKafkaConsumer<Ignore, string>("kafka",
+        configureSettings: settings => settings.Config.GroupId = "debezium-consumer");
+    builder.Services.AddKeyedSingleton("completions-debezium", (_, _) => new ConcurrentDictionary<int, TaskCompletionSource<Message>>());
+    builder.Services.AddHostedService<DebeziumConsumer>();
+}
 
 var app = builder.Build();
 
-await EnsureReplicationSetupAsync(app.Configuration);
+if (legacyConsumers) await EnsureReplicationSetupAsync(app.Configuration);
 
 // Configure the HTTP request pipeline.
 
-// Имитация полезной работы консьюмера: «отправка письма» ценой в переключение контекста
-app.MapPost("/send-email", async (Message message) =>
+// Отправитель всех плеч: строка в базу и больше ничего. Дальше её разбирают Debezium и прямые
+// читатели WAL - это и есть предмет замера. created_at ставит PostgreSQL, чтобы у всех плеч были
+// одни часы: это же значение едет в WAL и в конверт Debezium.
+app.MapPost("/load/messages", async (Message dto, AppDbContext db, CancellationToken ct) =>
 {
+    Message msg = new() { Content = dto.Content };
+    db.Messages.Add(msg);
+    await db.SaveChangesAsync(ct);
+
+    return Results.Created($"/load/messages/{msg.Id}", new { msg.Id, msg.CreatedAt });
+});
+
+// Имитация полезной работы консьюмера: «отправка письма» ценой в переключение контекста
+app.MapPost("/send-email", async (Message message, LoadStats stats) =>
+{
+    stats.Work(message.Id);
     await Task.Yield();
     return Results.Accepted();
+});
+
+app.MapGet("/load/stats", (LoadStats stats) => Results.Ok(stats.Snapshot()));
+
+app.MapPost("/load/reset", (LoadStats stats) =>
+{
+    stats.Reset();
+    return Results.NoContent();
 });
 
 app.MapPost("/direct", async (Message dto,
@@ -75,37 +112,13 @@ app.MapPost("/direct", async (Message dto,
     return Results.Created($"/messages/{msg.Id}", msg);
 });
 
-app.MapPost("/naive", async (Message dto,
-                               AppDbContext db,
-                               IProducer<int, Message> producer,
-                               [FromKeyedServices("completions")]ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
-                               CancellationToken ct) =>
+if (legacyConsumers)
 {
-    Message msg = new()
-    {
-        Content = dto.Content,
-        CreatedAt = DateTime.UtcNow,
-    };
-    db.Messages.Add(msg);
-    await db.SaveChangesAsync(ct);
-
-    await producer.ProduceAsync(KafkaConsumer.Topic, new()
-    {
-        Timestamp = new(msg.CreatedAt),
-        Key = msg.Id,
-        Value = msg
-    }, ct);
-    msg = await completions.WaitForCompletionAsync(msg.Id, ct);
-    return Results.Created($"/messages/{msg.Id}", msg);
-});
-
-app.MapPost("/outbox", async (Message dto,
-                               AppDbContext db,
-                               IOutboxWriter <Message> outbox,
-                               [FromKeyedServices("completions")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
-                               CancellationToken ct) =>
-{
-    var id = await db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(async (ct) =>
+    app.MapPost("/naive", async (Message dto,
+                                   AppDbContext db,
+                                   IProducer<int, Message> producer,
+                                   [FromKeyedServices("completions")]ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
+                                   CancellationToken ct) =>
     {
         Message msg = new()
         {
@@ -114,49 +127,76 @@ app.MapPost("/outbox", async (Message dto,
         };
         db.Messages.Add(msg);
         await db.SaveChangesAsync(ct);
-        await outbox.WriteAsync(msg, ct: ct);
-        return msg.Id;
-    }, ct => Task.FromResult(false), ct);
 
-    var msg = await completions.WaitForCompletionAsync(id, ct);
-    return Results.Created($"/messages/{id}", msg);
-});
+        await producer.ProduceAsync(KafkaConsumer.Topic, new()
+        {
+            Timestamp = new(msg.CreatedAt),
+            Key = msg.Id,
+            Value = msg
+        }, ct);
+        msg = await completions.WaitForCompletionAsync(msg.Id, ct);
+        return Results.Created($"/messages/{msg.Id}", msg);
+    });
 
-app.MapPost("/replication", async (Message dto,
-                               AppDbContext db,
-                               [FromKeyedServices("completions-replication")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
-                               CancellationToken ct) =>
-{
-    Message msg = new()
+    app.MapPost("/outbox", async (Message dto,
+                                   AppDbContext db,
+                                   IOutboxWriter <Message> outbox,
+                                   [FromKeyedServices("completions")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
+                                   CancellationToken ct) =>
     {
-        Content = dto.Content,
-        CreatedAt = DateTime.UtcNow,
-    };
-    db.Messages.Add(msg);
-    await db.SaveChangesAsync(ct);
+        var id = await db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(async (ct) =>
+        {
+            Message msg = new()
+            {
+                Content = dto.Content,
+                CreatedAt = DateTime.UtcNow,
+            };
+            db.Messages.Add(msg);
+            await db.SaveChangesAsync(ct);
+            await outbox.WriteAsync(msg, ct: ct);
+            return msg.Id;
+        }, ct => Task.FromResult(false), ct);
 
-    // Отдельной отправки нет: строка уже попала в WAL как часть INSERT выше.
-    msg = await completions.WaitForCompletionAsync(msg.Id, ct);
-    return Results.Created($"/messages/{msg.Id}", msg);
-});
+        var msg = await completions.WaitForCompletionAsync(id, ct);
+        return Results.Created($"/messages/{id}", msg);
+    });
 
-app.MapPost("/debezium", async (Message dto,
-                               AppDbContext db,
-                               [FromKeyedServices("completions-debezium")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
-                               CancellationToken ct) =>
-{
-    Message msg = new()
+    app.MapPost("/replication", async (Message dto,
+                                   AppDbContext db,
+                                   [FromKeyedServices("completions-replication")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
+                                   CancellationToken ct) =>
     {
-        Content = dto.Content,
-        CreatedAt = DateTime.UtcNow,
-    };
-    db.Messages.Add(msg);
-    await db.SaveChangesAsync(ct);
+        Message msg = new()
+        {
+            Content = dto.Content,
+            CreatedAt = DateTime.UtcNow,
+        };
+        db.Messages.Add(msg);
+        await db.SaveChangesAsync(ct);
 
-    // Debezium сам читает WAL через отдельный слот/публикацию и публикует CDC-событие в Kafka.
-    msg = await completions.WaitForCompletionAsync(msg.Id, ct);
-    return Results.Created($"/messages/{msg.Id}", msg);
-});
+        // Отдельной отправки нет: строка уже попала в WAL как часть INSERT выше.
+        msg = await completions.WaitForCompletionAsync(msg.Id, ct);
+        return Results.Created($"/messages/{msg.Id}", msg);
+    });
+
+    app.MapPost("/debezium", async (Message dto,
+                                   AppDbContext db,
+                                   [FromKeyedServices("completions-debezium")] ConcurrentDictionary<int, TaskCompletionSource<Message>> completions,
+                                   CancellationToken ct) =>
+    {
+        Message msg = new()
+        {
+            Content = dto.Content,
+            CreatedAt = DateTime.UtcNow,
+        };
+        db.Messages.Add(msg);
+        await db.SaveChangesAsync(ct);
+
+        // Debezium сам читает WAL через отдельный слот/публикацию и публикует CDC-событие в Kafka.
+        msg = await completions.WaitForCompletionAsync(msg.Id, ct);
+        return Results.Created($"/messages/{msg.Id}", msg);
+    });
+}
 
 
 app.Run();

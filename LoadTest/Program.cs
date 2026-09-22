@@ -1,128 +1,176 @@
-﻿using Confluent.Kafka;
-using Confluent.Kafka.Admin;
-using EasyNetQ;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBomber.Contracts.Stats;
 using NBomber.CSharp;
-using RabbitMQ.Client;
 using Npgsql;
 using Npgsql.Replication;
+using Serilog.Events;
 
-const string topic = "messages";
-const string queue = "messages";
-const string publication = "load_test_pub";
-const string slot = "load_test_slot";
+// Отправителей 200, получателей до 8, и каждый ждёт ответа веба: пул потоков не должен раскачиваться
+ThreadPool.SetMinThreads(512, 512);
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
 
-var producers = builder.Configuration.GetValue("LoadTest:Producers", 1);
-var consumers = builder.Configuration.GetValue("LoadTest:Consumers", 1);
-var messageCount = builder.Configuration.GetValue("LoadTest:MessageCount", 100_000);
-
-builder.AddNpgsqlDbContext<AppDbContext>("database",
-    configureDbContextOptions: options => {
-        options.UseSnakeCaseNamingConvention();
-    });
-var kafkaSerializer = new KafkaJsonSerializer<Message>();
-builder.AddKafkaProducer<int, Message>("kafka",
-    configureBuilder: builder => {
-        builder.SetValueSerializer(kafkaSerializer);
-    });
-builder.Services
-    .Configure<ConsumerConfig>(builder.Configuration.GetSection("Aspire:Confluent:Kafka:Consumer:Config"))
-    .PostConfigure<ConsumerConfig>(config =>
-    {
-        config.BootstrapServers = builder.Configuration.GetConnectionString("kafka");
-        // Топик создаётся заново на каждый прогон, поэтому читаем его с нуля и своей группой,
-        // чтобы не зацепить оффсеты предыдущих прогонов и не пропустить начало потока
-        config.GroupId = $"{config.GroupId ?? "load-test"}-{Guid.NewGuid():N}";
-        config.AutoOffsetReset = AutoOffsetReset.Earliest;
-    });
-builder.Services.AddTransient(sp =>
-    new ConsumerBuilder<int, Message>(sp.GetRequiredService<IOptions<ConsumerConfig>>().Value)
-        .SetValueDeserializer(kafkaSerializer)
-        .Build());
-
-builder.Services.AddSingleton(sp => new AdminClientConfig
-{
-    BootstrapServers = sp.GetRequiredService<IConfiguration>().GetConnectionString("kafka")
-});
-builder.Services.AddSingleton<IAdminClient>(sp =>
-    new AdminClientBuilder(sp.GetRequiredService<AdminClientConfig>()).Build());
+builder.Services.Configure<LoadTestOptions>(builder.Configuration.GetSection(LoadTestOptions.SectionName));
 
 builder.Services.AddSingleton(sp =>
-    NpgsqlDataSource.Create(sp.GetRequiredService<IConfiguration>().GetConnectionString("database")!));
+{
+    var connectionString = new NpgsqlConnectionStringBuilder(
+        sp.GetRequiredService<IConfiguration>().GetConnectionString("database")) { MaxPoolSize = 32 };
+    return NpgsqlDataSource.Create(connectionString.ConnectionString);
+});
+
+// Отдельное соединение на каждый слот: репликационный протокол не мультиплексируется
 builder.Services.AddTransient(sp =>
     new LogicalReplicationConnection(sp.GetRequiredService<IConfiguration>().GetConnectionString("database")));
 
-// Консьюмеры дёргают веб-приложение на каждое сообщение. Устойчивость выключена: ретраи,
-// таймауты и лимит параллельности из стандартного набора исказили бы замер
-#pragma warning disable EXTEXP0001 // RemoveAllResilienceHandlers помечен экспериментальным
-builder.Services.AddHttpClient(string.Empty, client => client.BaseAddress = new Uri("http://web"))
-    .RemoveAllResilienceHandlers();
-#pragma warning restore EXTEXP0001
-builder.Services.AddSingleton(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient());
+builder.AddRabbitMQClient("rmq", configureSettings: settings => settings.DisableTracing = true);
 
-builder.AddRabbitMQClient("rmq");
-builder.Services.AddEasyNetQ( builder.Configuration.GetConnectionString("rmq"));
+builder.Services.AddSingleton<WebClients>();
+builder.Services.AddSingleton<SystemLoadSampler>();
 
-
-builder.Services.AddKeyedSingleton<string>(KafkaScenarios.TopicKey, topic);
-builder.Services.AddKeyedSingleton<string>(RabbitMqScenarios.QueueKey, queue);
-builder.Services.AddKeyedSingleton<string>(PgReplicationScenarios.PublicationKey, publication);
-builder.Services.AddKeyedSingleton<string>(PgReplicationScenarios.SlotKey, slot);
-// Порядок регистрации задаёт порядок прогонов: кафка, кролик, репликация — три сеанса NBomber подряд
-builder.Services.AddSingleton<IProducerConsumerScenarios, KafkaScenarios>();
-builder.Services.AddSingleton<IProducerConsumerScenarios, RabbitMqScenarios>();
-builder.Services.AddSingleton<IProducerConsumerScenarios, PgReplicationScenarios>();
+builder.Services.AddSingleton<IProducerConsumerScenarios, DbzKafkaScenarios>();
+builder.Services.AddSingleton<IProducerConsumerScenarios, DbzQuorumScenarios>();
+// Два режима одного плеча: веерное чтение и оно же с шардированием по advisory-локам
+builder.Services.AddSingleton<IProducerConsumerScenarios>(sp =>
+    ActivatorUtilities.CreateInstance<PgReplicationScenarios>(sp, false));
+builder.Services.AddSingleton<IProducerConsumerScenarios>(sp =>
+    ActivatorUtilities.CreateInstance<PgReplicationScenarios>(sp, true));
 
 using var host = builder.Build();
 
-var admin = host.Services.GetRequiredService<IAdminClient>();
+var options = host.Services.GetRequiredService<IOptions<LoadTestOptions>>().Value;
+var logger = host.Services.GetRequiredService<ILogger<Program>>();
+var db = host.Services.GetRequiredService<NpgsqlDataSource>();
+var web = host.Services.GetRequiredService<WebClients>();
+var sampler = host.Services.GetRequiredService<SystemLoadSampler>();
+var scenarios = host.Services.GetServices<IProducerConsumerScenarios>().ToDictionary(s => s.Name);
+var resultsDir = Results.ResolveDirectory(options.ResultsDir);
 
-try
+// Ни один CDC-читатель не должен работать вне своего прогона: фон от чужого конвейера ложится на соседей
+// неодинаково. Контейнеры поднимает и гасит сам тест, в Init и Clean своего плеча.
+await Docker.StopAsync(options.KafkaResource, logger);
+await Docker.StopAsync(options.QuorumResource, logger);
+await Slots.DropAsync(db, options.DebeziumSlotPrefix);
+await Slots.DropAsync(db, options.WalSlotPrefix);
+
+var plan = options.TransportList
+    .Where(name => scenarios.ContainsKey(name))
+    .SelectMany(name => options.ConsumerCounts.Select(consumers => (Transport: name, Consumers: consumers)))
+    .ToList();
+
+if (plan.Count == 0)
 {
-    await admin.CreateTopicsAsync([new TopicSpecification
-    {
-        Name = topic,
-        // Партиций вдвое больше, чем консьюмеров: каждому достаётся по две
-        NumPartitions = consumers * 2,
-        ReplicationFactor = 1
-    }]);
+    logger.LogError("Нечего гонять: плечи {Transports} не найдены", options.Transports);
+    return 1;
 }
-catch (CreateTopicsException ex) when (ex.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))
+
+var results = new List<RunResult>();
+
+// Прогрев в голове свипа: оплачивает JIT всего пути, пулы соединений и метаданные брокеров.
+// Без него штраф в 10-20% достался бы тому плечу, которое оказалось первым.
+if (options.WarmupMessages > 0)
 {
-    Console.WriteLine($"Топик {topic} уже существует");
+    await RunAsync(plan[0].Transport, 1, options.WarmupMessages, warmup: true);
 }
 
-// Очередь — тот же одноразовый ресурс прогона, что топик у кафки.
-// Quorum-очередь реплицируется через Raft и пишет каждое сообщение на диск, как это делает кафка
-var rabbit = host.Services.GetRequiredService<IConnection>();
-await using var rabbitChannel = await rabbit.CreateChannelAsync();
-await rabbitChannel.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false,
-    arguments: new Dictionary<string, object?> { ["x-queue-type"] = "quorum" });
-
-try
+foreach (var (transport, consumers) in plan)
 {
-    foreach (var s in host.Services.GetServices<IProducerConsumerScenarios>())
+    await RunAsync(transport, consumers, options.Messages, warmup: false);
+}
+
+// Зонд дрейфа: повторяем первую комбинацию последней. Разошлись больше чем на 10% - значит стенд за время
+// свипа изменился, и межплечевые выводы идут с оговоркой.
+if (plan.Count > 1)
+{
+    await RunAsync(plan[0].Transport, plan[0].Consumers, options.Messages, warmup: true, label: "drift");
+}
+
+Results.Print(results);
+await Results.SaveAsync(results, resultsDir);
+
+// Зонд дрейфа против своего оригинала: если стенд за время свипа изменился, межплечевые выводы
+// нужно делать с поправкой, и лучше узнать об этом сразу, а не выводить её потом руками.
+var probe = results.LastOrDefault(r => r.Warmup && r.Transport == plan[0].Transport && r.Consumers == plan[0].Consumers);
+var origin = results.FirstOrDefault(r => !r.Warmup && r.Transport == plan[0].Transport && r.Consumers == plan[0].Consumers);
+if (probe is not null && origin is not null && origin.DrainOnlyPerSecond > 0)
+{
+    var drift = (probe.DrainOnlyPerSecond - origin.DrainOnlyPerSecond) / origin.DrainOnlyPerSecond * 100;
+    logger.LogInformation("Дрейф стенда на {Transport}-c{Consumers}: {Origin}/с в начале против {Probe}/с в конце, {Drift:0.#}%",
+        plan[0].Transport, plan[0].Consumers, origin.DrainOnlyPerSecond, probe.DrainOnlyPerSecond, drift);
+}
+
+var failed = results.Count(r => !r.Warmup && !r.Success);
+if (failed > 0) logger.LogWarning("Прогонов с ошибками: {Failed}", failed);
+return failed == 0 ? 0 : 2;
+
+async Task RunAsync(string transport, int consumers, int messages, bool warmup, string? label = null)
+{
+    var scenario = scenarios[transport];
+    var name = $"{transport}-c{consumers}{(warmup ? $"-{label ?? "warmup"}" : "")}";
+    var fanOut = transport.StartsWith("wal", StringComparison.Ordinal);
+
+    logger.LogInformation("=== {Name}: {Messages} сообщений, {Producers} отправителей ===",
+        name, messages, options.Producers);
+
+    var state = RunState.StartRun(messages);
+    sampler.Start();
+
+    try
     {
-        NBomberRunner
+        var runner = NBomberRunner
             .RegisterScenarios(
-                s.CreateProducerScenario(producers, "helloworld", messageCount),
-                s.CreateConsumerScenario(consumers, messageCount)
-                )
-            .WithTestSuite("Kafka vs Rabbit vs Logical Replication")
-            .WithTestName(s.Name)
-            .Run();
-    }
-}
-finally
-{
-    await admin.DeleteTopicsAsync([topic]);
-    await rabbitChannel.QueueDeleteAsync(queue);
-}
+                scenario.CreateProducerScenario(options.Producers, options.Content, messages),
+                scenario.CreateConsumerScenario(consumers, messages))
+            .WithTestSuite("Debezium Server vs прямое чтение WAL")
+            .WithTestName(name)
+            .WithScenarioCompletionTimeout(options.DrainTimeout + TimeSpan.FromSeconds(30))
+            .WithMinimumLogLevel(LogEventLevel.Warning)
+            // Живые метрики в консоли стоят процессорного времени, а сам процесс теста - измеряемый сервис
+            .DisplayConsoleMetrics(options.ConsoleMetrics);
 
+        runner = options.NBomberReports
+            ? runner.WithReportFolder(Path.Combine(resultsDir, "nbomber", name))
+                    .WithReportFormats(ReportFormat.Md, ReportFormat.Csv)
+            : runner.WithoutReports();
+
+        // NBomber.Run синхронный и блокирует поток целиком
+        var stats = await Task.Run(runner.Run);
+
+        var window = state.Window;
+        var load = await sampler.StopAsync(window.Start, window.End);
+
+        // Счётчики веба читаем после остановки конвейера: поздняя доставка иначе надует их задним числом
+        var counts = await Reset.InboxCountsAsync(db, fanOut);
+        var work = await web.WorkCountsAsync();
+        var claims = await Reset.WorkerClaimsAsync(db, fanOut);
+
+        var result = RunResult.From(transport, consumers, options, state, stats, counts, work, claims, load, messages, warmup);
+        results.Add(result);
+
+        logger.LogInformation("{Name}: {Status}, drain-only {Rate}/с, {CpuMs} мс CPU на сообщение",
+            name, result.Success ? "OK" : "FAILED", result.DrainOnlyPerSecond, result.CpuMsPerMessage);
+    }
+    catch (Exception ex)
+    {
+        var load = await sampler.StopAsync(DateTime.MinValue, DateTime.MinValue);
+        logger.LogError(ex, "{Name} упал", name);
+        results.Add(RunResult.Failed(transport, consumers, options, load, ex.Message));
+
+        // Прогон упал в неизвестном состоянии: гасим оба конвейера и сносим все слоты
+        await Docker.StopAsync(options.KafkaResource, logger);
+        await Docker.StopAsync(options.QuorumResource, logger);
+        await Slots.DropAsync(db, options.DebeziumSlotPrefix);
+        await Slots.DropAsync(db, options.WalSlotPrefix);
+    }
+
+    await Results.SaveProgressAsync(results, resultsDir);
+
+    // Чекпоинт сейчас, чтобы он не случился посреди следующего прогона и не достался соседу
+    await Reset.CheckpointAsync(db);
+    await Task.Delay(TimeSpan.FromSeconds(options.CooldownSeconds));
+}

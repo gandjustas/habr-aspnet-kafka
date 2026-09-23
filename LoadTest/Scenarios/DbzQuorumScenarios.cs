@@ -11,7 +11,7 @@ using RabbitMQ.Client.Events;
 
 /// <summary>
 /// Тот же Debezium Server, но приёмник - quorum-очередь RabbitMQ: конкурирующие получатели, каждое сообщение
-/// достаётся одному. Очередь и exchange создаются до старта контейнера: Debezium публикует без mandatory,
+/// достаётся одному. Очередь и exchange создаются до выпуска отправителей: Debezium публикует без mandatory,
 /// и непривязанный routing key означал бы тихую потерю всего потока при внешне успешном прогоне.
 /// </summary>
 internal class DbzQuorumScenarios(
@@ -133,9 +133,9 @@ internal class DbzQuorumScenarios(
     private async Task PrepareAsync(int consumers, Channel<(ulong, byte[])>[] buffers,
         Queue<(ulong DeliveryTag, Message Message)>[] pending, RunState state)
     {
-        await Docker.StopAsync(_options.QuorumResource, logger);
-        await Docker.StopAsync(_options.KafkaResource, logger);
-        await Slots.DropAsync(dataSource, _options.DebeziumSlotPrefix);
+        // Конвейер Debezium тест не поднимает и не гасит: его контейнер держит оператор. Здесь только
+        // проверка, что журнал не читает никто лишний - чужой конвейер декодировал бы те же вставки фоном.
+        await Slots.WarnOnForeignReadersAsync(dataSource, _options.DebeziumSlotPrefix, _options.QuorumSlot, logger);
         await Reset.RunAsync(dataSource);
         await web.ResetAsync();
 
@@ -163,7 +163,8 @@ internal class DbzQuorumScenarios(
             await _channels[i].BasicConsumeAsync(_options.QuorumQueue, autoAck: false, consumer);
         }
 
-        await Docker.StartAsync(_options.QuorumResource, logger);
+        // Отправителей выпускаем только после того, как конвейер действительно стримит: если контейнер
+        // Debezium не поднят, прогон честно падает по таймауту, а не меряет пустоту
         await Slots.WaitForStreamingAsync(dataSource, _options.QuorumSlot, _options.ReadyTimeoutSeconds);
 
         logger.LogInformation("Debezium Server -> quorum-очередь {Queue}, {Consumers} получателей",
@@ -200,8 +201,6 @@ internal class DbzQuorumScenarios(
 
     private async Task CleanupAsync()
     {
-        await Docker.StopAsync(_options.QuorumResource, logger);
-
         for (var i = 0; i < _channels.Length; i++)
         {
             try
@@ -216,6 +215,7 @@ internal class DbzQuorumScenarios(
         }
 
         _channels = [];
-        await Slots.DropAsync(dataSource, _options.DebeziumSlotPrefix);
+
+        // Слот Debezium не трогаем: он принадлежит чужому процессу, тест владеет только очередью и таблицами
     }
 }

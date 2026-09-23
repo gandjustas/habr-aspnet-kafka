@@ -31,7 +31,6 @@ builder.Services.AddTransient(sp =>
 builder.AddRabbitMQClient("rmq", configureSettings: settings => settings.DisableTracing = true);
 
 builder.Services.AddSingleton<WebClients>();
-builder.Services.AddSingleton<SystemLoadSampler>();
 
 builder.Services.AddSingleton<IProducerConsumerScenarios, DbzKafkaScenarios>();
 builder.Services.AddSingleton<IProducerConsumerScenarios, DbzQuorumScenarios>();
@@ -47,15 +46,11 @@ var options = host.Services.GetRequiredService<IOptions<LoadTestOptions>>().Valu
 var logger = host.Services.GetRequiredService<ILogger<Program>>();
 var db = host.Services.GetRequiredService<NpgsqlDataSource>();
 var web = host.Services.GetRequiredService<WebClients>();
-var sampler = host.Services.GetRequiredService<SystemLoadSampler>();
 var scenarios = host.Services.GetServices<IProducerConsumerScenarios>().ToDictionary(s => s.Name);
 var resultsDir = Results.ResolveDirectory(options.ResultsDir);
 
-// Ни один CDC-читатель не должен работать вне своего прогона: фон от чужого конвейера ложится на соседей
-// неодинаково. Контейнеры поднимает и гасит сам тест, в Init и Clean своего плеча.
-await Docker.StopAsync(options.KafkaResource, logger);
-await Docker.StopAsync(options.QuorumResource, logger);
-await Slots.DropAsync(db, options.DebeziumSlotPrefix);
+// Тест владеет только своими ресурсами: слотами прямого чтения, топиком, очередью и таблицами.
+// Конвейерами Debezium управляет оператор - поднятым должен быть ровно тот, который сейчас меряем.
 await Slots.DropAsync(db, options.WalSlotPrefix);
 
 var plan = options.TransportList
@@ -118,7 +113,6 @@ async Task RunAsync(string transport, int consumers, int messages, bool warmup, 
         name, messages, options.Producers);
 
     var state = RunState.StartRun(messages);
-    sampler.Start();
 
     try
     {
@@ -141,30 +135,23 @@ async Task RunAsync(string transport, int consumers, int messages, bool warmup, 
         // NBomber.Run синхронный и блокирует поток целиком
         var stats = await Task.Run(runner.Run);
 
-        var window = state.Window;
-        var load = await sampler.StopAsync(window.Start, window.End);
-
         // Счётчики веба читаем после остановки конвейера: поздняя доставка иначе надует их задним числом
         var counts = await Reset.InboxCountsAsync(db, fanOut);
         var work = await web.WorkCountsAsync();
         var claims = await Reset.WorkerClaimsAsync(db, fanOut);
 
-        var result = RunResult.From(transport, consumers, options, state, stats, counts, work, claims, load, messages, warmup);
+        var result = RunResult.From(transport, consumers, options, state, stats, counts, work, claims, messages, warmup);
         results.Add(result);
 
-        logger.LogInformation("{Name}: {Status}, drain-only {Rate}/с, {CpuMs} мс CPU на сообщение",
-            name, result.Success ? "OK" : "FAILED", result.DrainOnlyPerSecond, result.CpuMsPerMessage);
+        logger.LogInformation("{Name}: {Status}, drain-only {Rate}/с, окно {From:HH:mm:ss}-{To:HH:mm:ss} UTC",
+            name, result.Success ? "OK" : "FAILED", result.DrainOnlyPerSecond, result.WindowStart, result.WindowEnd);
     }
     catch (Exception ex)
     {
-        var load = await sampler.StopAsync(DateTime.MinValue, DateTime.MinValue);
         logger.LogError(ex, "{Name} упал", name);
-        results.Add(RunResult.Failed(transport, consumers, options, load, ex.Message));
+        results.Add(RunResult.Failed(transport, consumers, options, ex.Message));
 
-        // Прогон упал в неизвестном состоянии: гасим оба конвейера и сносим все слоты
-        await Docker.StopAsync(options.KafkaResource, logger);
-        await Docker.StopAsync(options.QuorumResource, logger);
-        await Slots.DropAsync(db, options.DebeziumSlotPrefix);
+        // Прогон упал в неизвестном состоянии: сносим свои слоты, чужие конвейеры не трогаем
         await Slots.DropAsync(db, options.WalSlotPrefix);
     }
 

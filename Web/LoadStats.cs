@@ -1,18 +1,13 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 
 /// <summary>
 /// Счётчики «ничего не делающего» сервиса: сколько раз получатели вызвали работу и для скольких разных
 /// сообщений. Совпадение обоих чисел с числом отправленных — независимое от базы доказательство того,
 /// что необратимое действие выполнено ровно один раз: инбокс мог бы сойтись сам с собой, а этот сервис
-/// про инбокс ничего не знает. Заодно отдаёт нагрузку самого процесса Web: docker stats его не видит,
-/// это процесс на хосте.
+/// про инбокс ничего не знает. Ресурсы процесса здесь не считаются - их показывает внешний мониторинг.
 /// </summary>
 public class LoadStats
 {
-    // Process.GetCurrentProcess() аллоцирует на каждом вызове, а сэмплер ходит сюда раз в секунду
-    private static readonly Process Self = Process.GetCurrentProcess();
-
     private readonly ConcurrentDictionary<int, byte> _ids = new();
     private long _calls;
 
@@ -28,15 +23,9 @@ public class LoadStats
         _ids.Clear();
     }
 
-    public object Snapshot()
+    public object Snapshot() => new
     {
-        Self.Refresh();
-        return new
-        {
-            Calls = Interlocked.Read(ref _calls),
-            Distinct = _ids.Count,
-            CpuMs = Self.TotalProcessorTime.TotalMilliseconds,
-            MemoryMb = Self.WorkingSet64 / 1024d / 1024d,
-        };
-    }
+        Calls = Interlocked.Read(ref _calls),
+        Distinct = _ids.Count,
+    };
 }

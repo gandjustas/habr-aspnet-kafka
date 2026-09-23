@@ -126,10 +126,9 @@ internal class DbzKafkaScenarios(
 
     private async Task PrepareAsync(int consumers, Queue<(ConsumeResult<Ignore, string> Result, Message Message)>[] pending, RunState state)
     {
-        // Оба конвейера гасим: работающий вне своего прогона Debezium декодирует журнал и мешает соседу
-        await Docker.StopAsync(_options.KafkaResource, logger);
-        await Docker.StopAsync(_options.QuorumResource, logger);
-        await Slots.DropAsync(dataSource, _options.DebeziumSlotPrefix);
+        // Конвейер Debezium тест не поднимает и не гасит: его контейнер держит оператор. Здесь только
+        // проверка, что журнал не читает никто лишний - чужой конвейер декодировал бы те же вставки фоном.
+        await Slots.WarnOnForeignReadersAsync(dataSource, _options.DebeziumSlotPrefix, _options.KafkaSlot, logger);
         await Reset.RunAsync(dataSource);
         await web.ResetAsync();
 
@@ -161,8 +160,8 @@ internal class DbzKafkaScenarios(
 
         await WaitForAssignmentAsync();
 
-        // Конвейер открывается только теперь: записанное до появления слота в поток уже не попадёт
-        await Docker.StartAsync(_options.KafkaResource, logger);
+        // Отправителей выпускаем только после того, как конвейер действительно стримит: если контейнер
+        // Debezium не поднят, прогон честно падает по таймауту, а не меряет пустоту
         await Slots.WaitForStreamingAsync(dataSource, _options.KafkaSlot, _options.ReadyTimeoutSeconds);
 
         logger.LogInformation("Debezium Server -> Kafka: топик {Topic}, {Partitions} партиций, {Consumers} получателей",
@@ -255,8 +254,6 @@ internal class DbzKafkaScenarios(
 
     private async Task CleanupAsync()
     {
-        await Docker.StopAsync(_options.KafkaResource, logger);
-
         foreach (var consumer in _consumers)
         {
             try
@@ -283,7 +280,7 @@ internal class DbzKafkaScenarios(
             logger.LogWarning(ex, "Kafka topic {Topic} delete failed", _options.KafkaTopic);
         }
 
-        await Slots.DropAsync(dataSource, _options.DebeziumSlotPrefix);
+        // Слот Debezium не трогаем: он принадлежит чужому процессу, тест владеет только топиком и таблицами
     }
 
     private string Bootstrap => configuration.GetConnectionString("kafka")!;

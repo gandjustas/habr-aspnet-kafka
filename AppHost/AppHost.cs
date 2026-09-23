@@ -30,10 +30,10 @@ IResourceBuilder<PostgresServerResource> postgres = builder.AddPostgres("postgre
 
 var database = postgres.AddDatabase("database");
 
-// Топик на каждый прогон создаёт сам тест, с нужным числом партиций, и только после этого поднимает
-// Debezium: топик, созданный брокером по первому сообщению, получил бы одну партицию, и весь свип
-// упёрся бы в одного получателя. Автосоздание при этом не выключить - на нём держится health check
-// Aspire, который публикует в свой топик; вместо запрета тест проверяет число назначенных партиций.
+// Топик на каждый прогон создаёт сам тест, с нужным числом партиций: топик, созданный брокером по первому
+// сообщению, получил бы одну партицию, и весь свип упёрся бы в одного получателя. Автосоздание при этом
+// не выключить - на нём держится health check Aspire, который публикует в свой топик; вместо запрета тест
+// проверяет, что каждому получателю досталась своя доля партиций.
 var kafka = builder.AddKafka("kafka")
     .WithDataVolume();
 
@@ -57,7 +57,7 @@ web.WaitForCompletion(migrations);
 
 // Общая часть конфигурации обоих Debezium Server: источник обязан быть одинаков, иначе сравнивались бы
 // настройки, а не приёмники. Позиция хранится в памяти, слот дропается при остановке - после выключения
-// контейнера состояния не остаётся вовсе, и каждый прогон начинается с чистого листа.
+// контейнера состояния не остаётся вовсе, и следующий запуск начинается с чистого листа.
 static string DebeziumSourceConfig(string prefix, string slot, string password) =>
     $"""
      debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
@@ -93,9 +93,10 @@ static string DebeziumSourceConfig(string prefix, string slot, string password) 
 var kafkaInternal = kafka.GetEndpoint("internal", KnownNetworkIdentifiers.DefaultAspireContainerNetwork)
     .Property(EndpointProperty.HostAndPort);
 
-// Оба Debezium Server стартуют вместе с AppHost, но нагрузочный тест сразу их останавливает и дальше
-// поднимает ровно на свой прогон: иначе конвейер, который сейчас не под замером, продолжал бы
-// декодировать журнал и мешать соседям.
+// Конвейеры Debezium поднимаются вручную: нагрузочный тест контейнерами не управляет, он только проверяет,
+// что нужный слот стримит, и предупреждает, если журнал читает кто-то ещё. Перед прогоном в дашборде Aspire
+// нужно поднять ровно тот конвейер, который меряется: работающий рядом второй декодирует те же вставки
+// и ляжет в замер фоном.
 var debeziumKafka = builder.AddContainer("dbz-kafka", "quay.io/debezium/server", DebeziumVersion)
     .WithEnvironment("JAVA_OPTS", "-Xms512m -Xmx1g") // паузы GC не должны выглядеть как задержка конвейера
     .WithContainerFiles("/debezium/config", async (_, ct) =>
@@ -116,7 +117,8 @@ var debeziumKafka = builder.AddContainer("dbz-kafka", "quay.io/debezium/server",
         },
     ])
     .WaitFor(kafka)
-    .WaitForCompletion(migrations); // публикацию load_test_pub создаёт миграция, Debezium её только читает
+    .WaitForCompletion(migrations) // публикацию load_test_pub создаёт миграция, Debezium её только читает
+    .WithExplicitStart();
 
 var debeziumQuorum = builder.AddContainer("dbz-quorum", "quay.io/debezium/server", DebeziumVersion)
     .WithEnvironment("JAVA_OPTS", "-Xms512m -Xmx1g")
@@ -142,7 +144,8 @@ var debeziumQuorum = builder.AddContainer("dbz-quorum", "quay.io/debezium/server
         },
     ])
     .WaitFor(rmq)
-    .WaitForCompletion(migrations);
+    .WaitForCompletion(migrations)
+    .WithExplicitStart();
 
 // Свип целиком живёт внутри процесса теста: плечи и число получателей перебираются в цикле, чтобы
 // прогрев JIT, пулов и метаданных не попадал в каждый прогон заново.
@@ -159,7 +162,7 @@ var loadTest = builder.AddProject<Projects.LoadTest>("load-test")
     .WithExplicitStart();
 
 // Публикация для логической репликации создаётся миграцией, тест без неё не стартует.
-// WaitFor на контейнеры Debezium намеренно нет: тест сам их гасит, и ожидание здоровья завесило бы запуск.
+// WaitFor на контейнеры Debezium намеренно нет: они поднимаются вручную и только под свой прогон.
 loadTest.WaitForCompletion(migrations);
 
 builder.Build().Run();

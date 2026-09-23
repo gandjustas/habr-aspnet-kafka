@@ -164,10 +164,9 @@ internal class PgReplicationScenarios(
         IAsyncEnumerator<PgOutputReplicationMessage>[] streams, ShardOwnership?[] shards, Task<bool>?[] moving,
         Queue<(NpgsqlLogSequenceNumber Wal, Message Message)>[] pending, CancellationTokenSource stop, RunState state)
     {
-        // Конвейеры Debezium в этом прогоне не участвуют и не должны декодировать журнал рядом
-        await Docker.StopAsync(_options.KafkaResource, logger);
-        await Docker.StopAsync(_options.QuorumResource, logger);
-        await Slots.DropAsync(dataSource, _options.DebeziumSlotPrefix);
+        // Конвейеры Debezium в этом прогоне не участвуют: если их контейнеры подняты, они декодируют
+        // те же вставки рядом, и это видно в предупреждении. Гасит их оператор, не тест.
+        await Slots.WarnOnForeignReadersAsync(dataSource, _options.DebeziumSlotPrefix, expected: "", logger);
         await Slots.DropAsync(dataSource, _options.WalSlotPrefix);
         await Reset.RunAsync(dataSource);
         await web.ResetAsync();

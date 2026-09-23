@@ -37,13 +37,6 @@ public class WebClients : IDisposable
         return (snapshot.GetProperty("calls").GetInt64(), snapshot.GetProperty("distinct").GetInt64());
     }
 
-    /// <summary>Нагрузка самого процесса Web: docker stats его не видит, это процесс на хосте.</summary>
-    public async Task<(double CpuMs, double MemoryMb)> ProcessLoadAsync(CancellationToken ct = default)
-    {
-        var snapshot = await Work.GetFromJsonAsync<JsonElement>("/load/stats", ct);
-        return (snapshot.GetProperty("cpuMs").GetDouble(), snapshot.GetProperty("memoryMb").GetDouble());
-    }
-
     private static HttpClient Create(Uri address, int maxConnections) =>
         new(new SocketsHttpHandler { MaxConnectionsPerServer = maxConnections, PooledConnectionLifetime = Timeout.InfiniteTimeSpan })
         {

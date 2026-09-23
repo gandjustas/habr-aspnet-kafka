@@ -42,11 +42,10 @@ public class LoadTestOptions
     public string QuorumQueue { get; set; } = "load-dbz-quorum";
     public string QuorumRoutingKey { get; set; } = "quorum";
 
-    /// <summary>Имена ресурсов Aspire: по ним ищутся контейнеры, которые поднимаются на время своего прогона.</summary>
-    public string KafkaResource { get; set; } = "dbz-kafka";
-    public string QuorumResource { get; set; } = "dbz-quorum";
-
-    /// <summary>Слоты Debezium Server: дропаются при остановке контейнера, но проверяем и добиваем сами.</summary>
+    /// <summary>
+    /// Слоты Debezium Server. Тест ими не управляет - только ждёт, что нужный стримит, и предупреждает,
+    /// если журнал одновременно читает чужой конвейер.
+    /// </summary>
     public string DebeziumSlotPrefix { get; set; } = "dbz_";
     public string KafkaSlot { get; set; } = "dbz_kafka_slot";
     public string QuorumSlot { get; set; } = "dbz_quorum_slot";
@@ -76,7 +75,6 @@ public class LoadTestOptions
 
     public bool ConsoleMetrics { get; set; }
     public bool NBomberReports { get; set; } = true;
-    public int SampleIntervalMs { get; set; } = 1000;
     public string? ResultsDir { get; set; }
 
     public IEnumerable<string> TransportList =>

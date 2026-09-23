@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 /// <summary>
@@ -57,12 +58,33 @@ internal static class Slots
         throw new TimeoutException($"Replication slot {slotName} did not start streaming");
     }
 
-    /// <summary>Сколько сейчас слотов с таким префиксом: страж изоляции перед прогоном.</summary>
-    public static async Task<long> CountAsync(NpgsqlDataSource db, string prefix, CancellationToken ct = default)
+    /// <summary>
+    /// Активные слоты с таким префиксом. Конвейеры Debezium тест не поднимает и не гасит - их жизненным
+    /// циклом управляет оператор, - поэтому перед прогоном он только смотрит, кто ещё читает журнал:
+    /// чужой работающий CDC-конвейер декодирует те же вставки и ложится на прогон фоном.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> ActiveAsync(NpgsqlDataSource db, string prefix, CancellationToken ct = default)
     {
-        await using var cmd = db.CreateCommand("SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE $1");
+        await using var cmd = db.CreateCommand(
+            "SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE $1 AND active_pid IS NOT NULL ORDER BY 1");
         cmd.Parameters.Add(P(prefix + "%"));
-        return Convert.ToInt64(await cmd.ExecuteScalarAsync(ct));
+
+        var names = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct)) names.Add(reader.GetString(0));
+        return names;
+    }
+
+    /// <summary>Предупреждает, если журнал сейчас читает кто-то ещё: цифры прогона будут с чужим фоном.</summary>
+    public static async Task WarnOnForeignReadersAsync(NpgsqlDataSource db, string prefix, string expected, ILogger logger,
+        CancellationToken ct = default)
+    {
+        var foreign = (await ActiveAsync(db, prefix, ct)).Where(name => name != expected).ToArray();
+        if (foreign.Length == 0) return;
+
+        logger.LogWarning(
+            "Журнал одновременно читают чужие конвейеры: {Slots}. Их декодирование ляжет в этот прогон фоном - " +
+            "оставьте поднятым только измеряемый конвейер", string.Join(", ", foreign));
     }
 
     private static NpgsqlParameter P<T>(T value) => new() { Value = value };

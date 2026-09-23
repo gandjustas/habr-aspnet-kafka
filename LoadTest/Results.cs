@@ -31,7 +31,8 @@ public record RunResult(
     long WorkDistinct,
     long WorkerClaimsMin,
     long WorkerClaimsMax,
-    SystemLoad Load,
+    DateTime WindowStart,
+    DateTime WindowEnd,
     bool Warmup = false,
     string? Error = null)
 {
@@ -44,19 +45,24 @@ public record RunResult(
                            && DistinctIds == Messages
                            && WorkCalls == Messages && WorkDistinct == Messages;
 
-    /// <summary>Процессорные секунды всех сервисов на одно сообщение - главная производная отчёта.</summary>
-    public double CpuMsPerMessage => Messages == 0 ? 0
-        : Math.Round(Load.Services.Sum(s => s.CpuSeconds) * 1000 / Messages, 3);
+    /// <summary>
+    /// Окно прогона: от первой отправки до последней выполненной работы. Ресурсы тест не считает - их
+    /// показывает внешний мониторинг, и это окно нужно, чтобы навести его на нужный отрезок времени.
+    /// </summary>
+    public string Window => WindowEnd > WindowStart
+        ? $"{WindowStart:HH:mm:ss}-{WindowEnd:HH:mm:ss}"
+        : "-";
 
     public static RunResult From(string transport, int consumers, LoadTestOptions options, RunState state, NodeStats stats,
         (long Rows, long DistinctIds) counts, (long Calls, long Distinct) work,
-        IReadOnlyList<long> workerClaims, SystemLoad load, int messages, bool warmup)
+        IReadOnlyList<long> workerClaims, int messages, bool warmup)
     {
         var produce = state.ProduceTime.TotalSeconds;
         var drain = state.DrainTime.TotalSeconds;
         var drainOnly = state.DrainOnlyTime.TotalSeconds;
         var processed = Math.Max(state.Processed, 1);
         var age = state.Age();
+        var window = state.Window;
 
         return new RunResult(
             transport, consumers, options.Producers, messages,
@@ -69,17 +75,18 @@ public record RunResult(
             state.SentOk, state.SentFail, state.Processed, state.Skipped, state.Failures,
             counts.Rows, counts.DistinctIds, work.Calls, work.Distinct,
             workerClaims.Count > 0 ? workerClaims.Min() : 0, workerClaims.Count > 0 ? workerClaims.Max() : 0,
-            load, warmup);
+            window.Start, window.End, warmup);
     }
 
     /// <summary>Прогон не состоялся: строка всё равно попадает в отчёт, чтобы свип не терял историю.</summary>
-    public static RunResult Failed(string transport, int consumers, LoadTestOptions options, SystemLoad load, string error) =>
+    public static RunResult Failed(string transport, int consumers, LoadTestOptions options, string error) =>
         new(Transport: transport, Consumers: consumers, Producers: options.Producers, Messages: options.Messages,
             ProduceSeconds: 0, SendPerSecond: 0, DrainSeconds: 0, DrainPerSecond: 0, DrainOnlySeconds: 0, DrainOnlyPerSecond: 0,
             ProducerP95Ms: 0, AgeP50Ms: 0, AgeP95Ms: 0, AgeMaxMs: 0, DbOpsPerMessage: 0,
             Sent: 0, SendFailed: 0, Processed: 0, Skipped: 0, Failures: 0,
             InboxRows: 0, DistinctIds: 0, WorkCalls: 0, WorkDistinct: 0,
-            WorkerClaimsMin: 0, WorkerClaimsMax: 0, Load: load, Error: error);
+            WorkerClaimsMin: 0, WorkerClaimsMax: 0,
+            WindowStart: DateTime.MinValue, WindowEnd: DateTime.MinValue, Error: error);
 
     private static double Percentile95(NodeStats stats, string scenario)
     {
@@ -98,14 +105,8 @@ public static class Results
         // равен половине времени разбора по построению, а часы PostgreSQL в контейнере и часы хоста
         // расходятся на сотни миллисекунд. Цифры остаются в json, но выводами по ним быть не может.
         "pipeline", "cons", "produce s", "send/s", "send p95 ms", "drain s", "drain/s", "drain-only s", "drain-only/s",
-        "cpu ms/msg", "ops/msg", "processed", "skipped", "work calls", "work uniq",
-        "claim min/max", "status",
-    ];
-
-    private static readonly string[] LoadHeader =
-    [
-        "pipeline", "cons", "service", "cpu avg %", "cpu max %", "cpu s", "mem avg MB", "mem max MB",
-        "disk read MB", "disk write MB",
+        "ops/msg", "processed", "skipped", "work calls", "work uniq",
+        "claim min/max", "окно UTC", "status",
     ];
 
     public static void Print(IReadOnlyList<RunResult> results)
@@ -114,11 +115,6 @@ public static class Results
         Console.WriteLine($"=== {Title} ===");
         Console.WriteLine(string.Join(" | ", ThroughputHeader));
         foreach (var r in results) Console.WriteLine(string.Join(" | ", ThroughputRow(r)));
-
-        Console.WriteLine();
-        Console.WriteLine("=== Нагрузка на сервисы ===");
-        Console.WriteLine(string.Join(" | ", LoadHeader));
-        foreach (var row in results.SelectMany(LoadRows)) Console.WriteLine(string.Join(" | ", row));
         Console.WriteLine();
 
         foreach (var failed in results.Where(r => r.Error is not null))
@@ -144,9 +140,8 @@ public static class Results
             .AppendLine()
             .Append(Table(ThroughputHeader, measured.Select(ThroughputRow)))
             .AppendLine()
-            .AppendLine("## Нагрузка на сервисы")
-            .AppendLine()
-            .Append(Table(LoadHeader, measured.SelectMany(LoadRows)));
+            .AppendLine("Нагрузку на сервисы тест не снимает: её показывает внешний мониторинг. Колонка «окно UTC» —")
+            .AppendLine("отрезок от первой отправки до последней выполненной работы, по нему и надо смотреть графики.");
 
         await File.WriteAllTextAsync(Path.Combine(directory, $"results-{stamp}.md"), markdown.ToString());
         Console.WriteLine($"Результаты: {Path.Combine(directory, $"results-{stamp}.md")}");
@@ -173,28 +168,14 @@ public static class Results
         r.Transport, r.Consumers.ToString(),
         Number(r.ProduceSeconds), Number(r.SendPerSecond), Number(r.ProducerP95Ms),
         Number(r.DrainSeconds), Number(r.DrainPerSecond), Number(r.DrainOnlySeconds), Number(r.DrainOnlyPerSecond),
-        Number(r.CpuMsPerMessage), Number(r.DbOpsPerMessage),
+        Number(r.DbOpsPerMessage),
         r.Processed.ToString(), r.Skipped.ToString(), r.WorkCalls.ToString(), r.WorkDistinct.ToString(),
         $"{r.WorkerClaimsMin}/{r.WorkerClaimsMax}",
+        r.Window,
         r.Success ? "OK" : "FAILED",
     ];
 
-    /// <summary>Строки нагрузки: по одной на сервис плюс веб и сам процесс теста.</summary>
-    private static IEnumerable<string[]> LoadRows(RunResult r)
-    {
-        foreach (var service in r.Load.Services)
-            yield return
-            [
-                r.Transport, r.Consumers.ToString(), service.Service,
-                Number(service.CpuPercentAvg), Number(service.CpuPercentMax), Number(service.CpuSeconds),
-                Number(service.MemoryMbAvg), Number(service.MemoryMbMax),
-                Number(service.DiskReadMb), Number(service.DiskWriteMb),
-            ];
-    }
-
     private static string Number(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
-
-    private static string Number(double? value) => value is null ? "n/a" : Number(value.Value);
 
     /// <summary>Каталог результатов: load-tests/results рядом с solution-файлом.</summary>
     public static string ResolveDirectory(string? configured)

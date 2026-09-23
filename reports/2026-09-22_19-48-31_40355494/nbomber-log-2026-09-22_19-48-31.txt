@@ -1,3 +1,0 @@
-2026-09-22 22:48:31.479 +03:00 [WRN] [ThreadId:6] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 22:48:47.473 +03:00 [WRN] [ThreadId:27] Stopping scenario early: dbz-kafka-consumer, reason: очередь отработана
-2026-09-22 22:48:56.690 +03:00 [WRN] [ThreadId:11] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.

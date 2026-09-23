@@ -1,2 +1,0 @@
-2026-09-22 23:01:53.786 +03:00 [WRN] [ThreadId:20] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 23:02:16.961 +03:00 [WRN] [ThreadId:27] Stopping scenario early: wal-sharded-consumer, reason: очередь отработана

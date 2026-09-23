@@ -1,6 +1,0 @@
-2026-09-22 22:59:21.462 +03:00 [WRN] [ThreadId:15] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 22:59:47.299 +03:00 [ERR] [ThreadId:21] Init scenario error: 'System.InvalidOperationException: No free member slot
-   at ShardOwnership.JoinAsync(Int32 maxMembers, CancellationToken ct) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\ShardOwnership.cs:line 67
-   at ShardOwnership.JoinAsync(Int32 maxMembers, CancellationToken ct) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\ShardOwnership.cs:line 74
-   at PgReplicationScenarios.PrepareAsync(Int32 consumers, String[] slots, LogicalReplicationConnection[] connections, IAsyncEnumerator`1[] streams, ShardOwnership[] shards, Task`1[] moving, Queue`1[] pending, CancellationTokenSource stop, RunState state) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\PgReplicationScenarios.cs:line 203
-   at NBomber.DomainServices.TestHost.TestHostScenario.initEnabledScenarios@20.MoveNext()'

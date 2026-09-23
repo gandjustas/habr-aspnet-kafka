@@ -1,8 +1,0 @@
-2026-09-22 22:55:31.041 +03:00 [WRN] [ThreadId:19] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 22:55:42.139 +03:00 [WRN] [ThreadId:41] Stopping scenario early: wal-consumer, reason: очередь отработана
-2026-09-22 22:55:53.562 +03:00 [WRN] [ThreadId:36] Cleaning scenario failed: wal-consumer
-System.NotSupportedException: Specified method is not supported.
-   at Npgsql.Replication.PgOutput.PgOutputAsyncEnumerable.StartReplicationInternal(CancellationToken cancellationToken)+System.IAsyncDisposable.DisposeAsync()
-   at PgReplicationScenarios.CleanupAsync(Int32 consumers, String[] slots, LogicalReplicationConnection[] connections, IAsyncEnumerator`1[] streams, ShardOwnership[] shards, CancellationTokenSource stop) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\PgReplicationScenarios.cs:line 228
-   at NBomber.DomainServices.TestHost.TestHostScenario.cleanScenarios@69.MoveNext()
-2026-09-22 22:55:53.730 +03:00 [WRN] [ThreadId:11] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.

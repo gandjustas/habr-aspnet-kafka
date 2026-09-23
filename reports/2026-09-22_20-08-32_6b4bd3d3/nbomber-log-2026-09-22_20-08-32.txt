@@ -1,3 +1,0 @@
-2026-09-22 23:08:32.528 +03:00 [WRN] [ThreadId:33] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 23:08:49.062 +03:00 [WRN] [ThreadId:32] Stopping scenario early: dbz-quorum-consumer, reason: очередь отработана
-2026-09-22 23:08:53.915 +03:00 [WRN] [ThreadId:24] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.

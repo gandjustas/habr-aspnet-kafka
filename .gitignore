@@ -362,7 +362,8 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-LoadTest/reports
+# Логи и отчёты NBomber: их пишет каждый прогон, в репозитории им делать нечего
+reports/
 # Отчёты NBomber по каждому прогону: в репозиторий идут только сводные results-*.md и .json
 load-tests/results/nbomber/
 load-tests/results/results-latest.json

@@ -1,5 +1,0 @@
-2026-09-22 22:49:45.058 +03:00 [WRN] [ThreadId:8] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 22:51:46.939 +03:00 [ERR] [ThreadId:11] Init scenario error: 'System.TimeoutException: Партиции не разошлись по получателям: 4/4, ожидалось по 2
-   at DbzKafkaScenarios.WaitForAssignmentAsync() in D:\Projects\aspnet-kafka\LoadTest\Scenarios\DbzKafkaScenarios.cs:line 252
-   at DbzKafkaScenarios.PrepareAsync(Int32 consumers, Queue`1[] ready, Queue`1[] pending, RunState state) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\DbzKafkaScenarios.cs:line 162
-   at NBomber.DomainServices.TestHost.TestHostScenario.initEnabledScenarios@20.MoveNext()'

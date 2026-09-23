@@ -1,5 +1,0 @@
-2026-09-22 22:47:47.907 +03:00 [WRN] [ThreadId:14] THIS VERSION IS FREE ONLY FOR PERSONAL USE. You can't use it for an organization.
-2026-09-22 22:47:49.225 +03:00 [ERR] [ThreadId:11] Init scenario error: 'Confluent.Kafka.Admin.CreateTopicsException: An error occurred creating topics: [dbzk.public.messages]: [Topic 'dbzk.public.messages' already exists.].
-   at DbzKafkaScenarios.RecreateTopicAsync(IAdminClient admin) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\DbzKafkaScenarios.cs:line 193
-   at DbzKafkaScenarios.PrepareAsync(Int32 consumers, Queue`1[] ready, Queue`1[] pending, RunState state) in D:\Projects\aspnet-kafka\LoadTest\Scenarios\DbzKafkaScenarios.cs:line 141
-   at NBomber.DomainServices.TestHost.TestHostScenario.initEnabledScenarios@20.MoveNext()'

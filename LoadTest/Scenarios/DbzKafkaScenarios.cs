@@ -34,6 +34,9 @@ internal class DbzKafkaScenarios(
         var state = RunState.Current;
         // Подтверждение и сообщение лежат одной парой: разъехаться они не должны даже при ошибке работы
         var pending = new Queue<(ConsumeResult<Ignore, string> Result, Message Message)>[consumers];
+        // Оффсет позиционный, поэтому двигаем его только до последнего закрытого сообщения партиции,
+        // перед которым не осталось незакрытых: иначе подтверждение чужого claim перепрыгнуло бы нашу работу
+        var acks = new Dictionary<TopicPartition, AckWatermark<long>>[consumers];
 
         // Одна итерация = одно обработанное сообщение. Копия завершается, когда очередь разобрана:
         // будить её "бюджетом итераций" нельзя - остаток бюджета соседей превратился бы в ложные отказы.
@@ -61,10 +64,10 @@ internal class DbzKafkaScenarios(
             state.MarkAge(DateTime.UtcNow - message.CreatedAt);
 
             // Оффсет запоминаем только после работы, отправит его клиент сам по таймауту
-            _consumers[index].StoreOffset(consumed);
+            Resolve(index, consumed);
             return Response.Ok();
         })
-        .WithInit(_ => PrepareAsync(consumers, pending, state))
+        .WithInit(_ => PrepareAsync(consumers, pending, acks, state))
         .WithClean(_ => CleanupAsync())
         .WithoutWarmUp()
         .WithLoadSimulations(Simulation.KeepConstant(consumers, _options.DrainTimeout));
@@ -90,8 +93,8 @@ internal class DbzKafkaScenarios(
                 var message = DebeziumEnvelope.ReadMessage(result.Message.Value);
                 if (message is null)
                 {
-                    // Не insert: подтверждаем и не тратим на него итерацию
-                    consumer.StoreOffset(result);
+                    // Не insert: закрываем и не тратим на него итерацию
+                    Resolve(index, result);
                     continue;
                 }
 
@@ -108,23 +111,46 @@ internal class DbzKafkaScenarios(
             {
                 if (claimed.Contains(message.Id))
                 {
+                    // Пока работа не сделана, позицию партиции двигать нельзя даже за соседними сообщениями
+                    Watermark(index, result.TopicPartition).Hold(result.Offset.Value);
                     pending[index].Enqueue((result, message));
                 }
                 else
                 {
-                    // Повторная доставка: работа уже сделана, просто подтверждаем
+                    // Повторная доставка: работа уже сделана, просто закрываем
                     state.MarkHandled(false);
-                    consumer.StoreOffset(result);
+                    Resolve(index, result);
                 }
             }
 
             return true;
         }
+
+        AckWatermark<long> Watermark(int index, TopicPartition partition)
+        {
+            if (!acks[index].TryGetValue(partition, out var watermark))
+            {
+                acks[index][partition] = watermark = new AckWatermark<long>();
+            }
+
+            return watermark;
+        }
+
+        // Сообщение закрыто: либо работа сделана, либо её не будет. Оффсет запоминаем, только если
+        // водяной знак сдвинулся, и ровно на него - следующее за последним закрытым.
+        void Resolve(int index, ConsumeResult<Ignore, string> result)
+        {
+            if (Watermark(index, result.TopicPartition).TryResolve(result.Offset.Value, out var confirmed))
+            {
+                _consumers[index].StoreOffset(new TopicPartitionOffset(result.TopicPartition, new Offset(confirmed + 1)));
+            }
+        }
     }
 
     private static readonly TimeSpan PollDelay = TimeSpan.FromMilliseconds(100);
 
-    private async Task PrepareAsync(int consumers, Queue<(ConsumeResult<Ignore, string> Result, Message Message)>[] pending, RunState state)
+    private async Task PrepareAsync(int consumers, Queue<(ConsumeResult<Ignore, string> Result, Message Message)>[] pending,
+        Dictionary<TopicPartition, AckWatermark<long>>[] acks, RunState state)
     {
         // Конвейер Debezium тест не поднимает и не гасит: его контейнер держит оператор. Здесь только
         // проверка, что журнал не читает никто лишний - чужой конвейер декодировал бы те же вставки фоном.
@@ -145,6 +171,7 @@ internal class DbzKafkaScenarios(
         for (var i = 0; i < consumers; i++)
         {
             pending[i] = new Queue<(ConsumeResult<Ignore, string>, Message)>(_options.BatchSize);
+            acks[i] = [];
             _consumers[i] = new ConsumerBuilder<Ignore, string>(new ConsumerConfig
             {
                 BootstrapServers = Bootstrap,

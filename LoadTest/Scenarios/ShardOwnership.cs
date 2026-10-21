@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -57,13 +57,14 @@ internal sealed class ShardOwnership : IAsyncDisposable
     {
         await _connection.OpenAsync(ct);
 
+        // LIMIT 1 останавливает генерацию на первом успехе: табличная функция в FROM вычисляется лениво,
+        // поэтому лишних локов не захватывается и отпускать нечего. С min() пришлось бы пройти весь ряд.
+        // Сессия предыдущего прогона могла ещё не закрыться на стороне сервера - тогда просто подождём.
         await using var cmd = new NpgsqlCommand(
-            "SELECT min(m) FROM generate_series(0, $1) AS m WHERE pg_try_advisory_lock($2, m)", _connection);
+            "SELECT m FROM generate_series(0, $1) AS m WHERE pg_try_advisory_lock($2, m) LIMIT 1", _connection);
         cmd.Parameters.Add(new NpgsqlParameter { Value = maxMembers - 1 });
         cmd.Parameters.Add(new NpgsqlParameter { Value = MemberNamespace });
 
-        // generate_series остановить нельзя, поэтому лишние занятые номера тут же отпускаем.
-        // Сессия предыдущего прогона могла ещё не закрыться на стороне сервера - тогда просто подождём.
         object? index = null;
         for (var attempt = 0; attempt < 10; attempt++)
         {
@@ -74,14 +75,7 @@ internal sealed class ShardOwnership : IAsyncDisposable
             await Task.Delay(1000, ct);
         }
 
-        if (index is not int member) throw new InvalidOperationException("No free member slot");
-
-        await using var release = new NpgsqlCommand(
-            "SELECT pg_advisory_unlock($1, m) FROM generate_series($2, $3) AS m", _connection);
-        release.Parameters.Add(new NpgsqlParameter { Value = MemberNamespace });
-        release.Parameters.Add(new NpgsqlParameter { Value = member + 1 });
-        release.Parameters.Add(new NpgsqlParameter { Value = maxMembers - 1 });
-        await release.ExecuteNonQueryAsync(ct);
+        if (index is not int) throw new InvalidOperationException("No free member slot");
     }
 
     /// <summary>Наш шард или ничей - беремся; чужой пропускаем, не обращаясь к базе.</summary>

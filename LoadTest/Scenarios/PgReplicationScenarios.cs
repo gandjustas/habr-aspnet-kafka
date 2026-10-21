@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -50,6 +50,9 @@ internal class PgReplicationScenarios(
         var moving = new Task<bool>?[consumers];
         // Закреплённые строки, ждущие своей итерации
         var pending = new Queue<(NpgsqlLogSequenceNumber Wal, Message Message)>[consumers];
+        // LSN позиционный: подтверждая его, подтверждаем и всё, что перед ним. Поэтому пропущенную чужую
+        // строку нельзя подтверждать сразу - перед ней в пачке может лежать наша незавершённая работа
+        var acks = new AckWatermark<NpgsqlLogSequenceNumber>[consumers];
 
         return Scenario.Create($"{Name}-consumer", async context =>
         {
@@ -74,7 +77,7 @@ internal class PgReplicationScenarios(
             state.MarkAge(DateTime.UtcNow - message.CreatedAt);
 
             // Позицию двигаем только после работы, а отправляем её раз на разобранную пачку
-            connections[index].SetReplicationStatus(wal);
+            Resolve(index, wal);
             if (pending[index].Count == 0)
             {
                 await connections[index].SendStatusUpdate(context.ScenarioCancellationToken);
@@ -82,7 +85,7 @@ internal class PgReplicationScenarios(
 
             return Response.Ok();
         })
-        .WithInit(_ => PrepareAsync(consumers, slots, connections, streams, shards, moving, pending, stop, state))
+        .WithInit(_ => PrepareAsync(consumers, slots, connections, streams, shards, moving, pending, acks, stop, state))
         .WithClean(_ => CleanupAsync(consumers, connections, streams, shards, moving, stop))
         .WithoutWarmUp()
         .WithLoadSimulations(Simulation.KeepConstant(consumers, _options.DrainTimeout));
@@ -120,8 +123,8 @@ internal class PgReplicationScenarios(
                 // Кроме самих строк в потоке едут Begin/Relation/Commit и keep-alive
                 if (walMessage is not InsertMessage insertMessage)
                 {
-                    // Позицию служебных сообщений всё равно подтверждаем, иначе слот не двигается
-                    connections[index].SetReplicationStatus(walMessage.WalEnd);
+                    // Позицию служебных сообщений всё равно закрываем, иначе слот не двигается
+                    Resolve(index, walMessage.WalEnd);
                     continue;
                 }
 
@@ -130,7 +133,7 @@ internal class PgReplicationScenarios(
                 // Чужой шард пропускаем, не обращаясь к базе. Ничей берём: claim разрулит, если возьмут двое
                 if (ownership is not null && !ownership.MayClaim(message.Id))
                 {
-                    connections[index].SetReplicationStatus(walMessage.WalEnd);
+                    Resolve(index, walMessage.WalEnd);
                     continue;
                 }
 
@@ -146,23 +149,36 @@ internal class PgReplicationScenarios(
             {
                 if (claimed.Contains(i))
                 {
+                    // Пока работа не сделана, позицию нельзя двигать и за соседними строками пачки
+                    acks[index].Hold(batch[i].Wal);
                     pending[index].Enqueue(batch[i]);
                 }
                 else
                 {
-                    // Строку уже забрал сосед: работы нет, только двигаем свою позицию
+                    // Строку уже забрал сосед: работы нет, только закрываем её у себя
                     state.MarkHandled(false);
-                    connections[index].SetReplicationStatus(batch[i].Wal);
+                    Resolve(index, batch[i].Wal);
                 }
             }
 
             return true;
         }
+
+        // Строка закрыта: либо работа сделана, либо её не будет. Позицию двигаем только если водяной знак
+        // сдвинулся, то есть перед ней не осталось незавершённой работы.
+        void Resolve(int index, NpgsqlLogSequenceNumber wal)
+        {
+            if (acks[index].TryResolve(wal, out var confirmed))
+            {
+                connections[index].SetReplicationStatus(confirmed);
+            }
+        }
     }
 
     private async Task PrepareAsync(int consumers, string[] slots, LogicalReplicationConnection[] connections,
         IAsyncEnumerator<PgOutputReplicationMessage>[] streams, ShardOwnership?[] shards, Task<bool>?[] moving,
-        Queue<(NpgsqlLogSequenceNumber Wal, Message Message)>[] pending, CancellationTokenSource stop, RunState state)
+        Queue<(NpgsqlLogSequenceNumber Wal, Message Message)>[] pending, AckWatermark<NpgsqlLogSequenceNumber>[] acks,
+        CancellationTokenSource stop, RunState state)
     {
         // Конвейеры Debezium в этом прогоне не участвуют: если их контейнеры подняты, они декодируют
         // те же вставки рядом, и это видно в предупреждении. Гасит их оператор, не тест.
@@ -175,6 +191,7 @@ internal class PgReplicationScenarios(
         {
             slots[i] = $"{_options.WalSlotPrefix}_{i}";
             pending[i] = new Queue<(NpgsqlLogSequenceNumber, Message)>(_options.BatchSize);
+            acks[i] = new AckWatermark<NpgsqlLogSequenceNumber>();
             connections[i] = services.GetRequiredService<LogicalReplicationConnection>();
             await connections[i].Open(stop.Token);
 
